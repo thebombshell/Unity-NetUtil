@@ -14,6 +14,8 @@ public static class NetUtilMessageType {
 	public const byte ERROR = 0;
 	public const byte CONNECTION_INFO = 1;
 	public const byte TALK = 2;
+	public const byte CREATE_OBJECT = 3;
+	public const byte DESTROY_OBJECT = 4;
 }
 
 [Serializable]
@@ -41,6 +43,30 @@ public class NetUtil {
 	private bool m_isHost;
 
 	/// <summary>
+	/// true if setup is successful
+	/// </summary>
+	public bool isSetup {
+		
+		get {
+
+			return m_isSetup;
+		}
+	}
+
+	/// <summary>
+	/// true if net util is host
+	/// </summary>
+	public bool isHost {
+		
+		get {
+
+			return m_isHost;
+		}
+	}
+
+	// transport channels
+
+	/// <summary>
 	/// index of channel for low priority synchronization
 	/// </summary>
 	private int m_lowSyncChannel;
@@ -55,15 +81,14 @@ public class NetUtil {
 	/// </summary>
 	private int m_messageChannel;
 
-	/// <summary>
-	/// index of udp sender host
-	/// </summary>
-	private int m_outHost;
+	// transport hosts
 
 	/// <summary>
-	/// index of udp listener host
+	/// index of udp host
 	/// </summary>
-	private int m_inHost;
+	private int m_host;
+
+	// connection informations
 
 	/// <summary>
 	/// index of the connection id connected to
@@ -71,14 +96,26 @@ public class NetUtil {
 	private int m_hostId;
 
 	/// <summary>
-	/// name of this host on the network
-	/// </summary>
-	private string m_name;
-
-	/// <summary>
 	/// a collection of active connections sorted by their unique identifiers
 	/// </summary>
-	private Dictionary<int, NetUtilConnection> m_connections;
+	private Dictionary<int, NetUtilConnection> m_connections = new Dictionary<int, NetUtilConnection>();
+
+	// client information
+
+	/// <summary>
+	/// name of this host on the network
+	/// </summary>
+	private string m_name = "phillip";
+
+	/// <summary>
+	/// index of the host socket
+	/// </summary>
+	private int m_hostSocket;
+
+	/// <summary>
+	/// index of the client socket
+	/// </summary>
+	private int m_clientSocket;
 
 	/// <summary>
 	/// name of this host on the network
@@ -95,10 +132,10 @@ public class NetUtil {
 	/// Creates a new network utility object
 	/// </summary>
 	/// <param name="t_name">name of this host on the network</param>
-	public NetUtil(string t_name) {
-
-		m_name = t_name;
-		m_connections = new Dictionary<int, NetUtilConnection>();
+	public NetUtil(int t_hostSocket, int t_clientSocket) {
+	
+		m_hostSocket = t_hostSocket;
+		m_clientSocket = t_clientSocket;
 	}
 
 	/// <summary>
@@ -109,9 +146,6 @@ public class NetUtil {
 		// set up network transport
 		NetworkTransport.Init();
 
-		// host - 7108
-		// client - 7109
-
 		// set up network topology
 		ConnectionConfig config = new ConnectionConfig();
 		m_lowSyncChannel = config.AddChannel(QosType.StateUpdate);
@@ -119,11 +153,21 @@ public class NetUtil {
 		m_messageChannel = config.AddChannel(QosType.ReliableSequenced);
 		HostTopology topology = new HostTopology(config, 16);
 
-		// set up hosts
-		m_outHost = NetworkTransport.AddHost(topology, isHosting ? 7108 : 7109);
-		m_inHost = NetworkTransport.AddHost(topology, isHosting ? 7109 : 7108);
+		// set up host
+		if (isHosting) {
 
+			m_host = NetworkTransport.AddHost(topology, m_hostSocket);
+		}
+		else {
+
+			m_host = NetworkTransport.AddHost(topology);
+		}
+
+		// set state bools
 		m_isHost = isHosting;
+		m_isSetup = true;
+
+		DebugConsole.Log("Socket opened");
 	}
 
 	/// <summary>
@@ -132,8 +176,7 @@ public class NetUtil {
 	public void Shutdown() {
 
 		// shut down hosts
-		NetworkTransport.RemoveHost(m_outHost);
-		NetworkTransport.RemoveHost(m_inHost);
+		NetworkTransport.RemoveHost(m_host);
 	}
 
 	/// <summary>
@@ -143,9 +186,8 @@ public class NetUtil {
 	public void Connect(string t_ip) {
 
 		byte error = 0;
-		m_hostId = NetworkTransport.Connect(m_outHost, t_ip, 7109, 0, out error);
+		m_hostId = NetworkTransport.Connect(m_host, t_ip, m_hostSocket, 0, out error);
 		AddConnection(m_hostId, "host");
-		SendMessage(NetUtilMessageType.CONNECTION_INFO, m_name);
 	}
 
 	/// <summary>
@@ -176,16 +218,17 @@ public class NetUtil {
 		do {
 
 			eventType = NetworkTransport.Receive(out hostId, out connectionId, out channelId, buffer, 512, out size, out error);
-			if (hostId == m_outHost) {
-
-				continue;
+			if (eventType != NetworkEventType.Nothing) {
+			
+				DebugConsole.Log("message: " + eventType.ToString() + ", " + hostId + ", " + connectionId + ", " + channelId);
 			}
 			switch (eventType) {
 
 				case NetworkEventType.DataEvent:
-				HandleData(connectionId, buffer, size);
+					HandleData(connectionId, buffer, size);
 				break;
 				case NetworkEventType.ConnectEvent:
+					HandleConnect(connectionId);
 				break;
 				case NetworkEventType.DisconnectEvent:
 				break;
@@ -217,6 +260,32 @@ public class NetUtil {
 	}
 
 	/// <summary>
+	/// handles connection messages
+	/// </summary>
+	/// <param name="connectionId">connection id the message came from</param>
+	private void HandleConnect(int connectionId) {
+		
+		if (m_isHost) {
+
+			if (!m_connections.ContainsKey(connectionId)) {
+			
+				AddConnection(connectionId, "");
+			}
+		}
+		else {
+
+			if (connectionId != m_hostId) {
+			
+				DebugConsole.Log("an unknown connection attempt has occured.");
+			}
+			else {
+
+				SendMessage(NetUtilMessageType.CONNECTION_INFO, m_name);
+			}
+		}
+	}
+
+	/// <summary>
 	/// handles incoming connection info messages
 	/// </summary>
 	private void HandleConnectionInfo(int connectionId, byte[] buffer, int size) {
@@ -235,11 +304,11 @@ public class NetUtil {
 		string message = ConstructType<string>(buffer, 1, size - 1);
 		if (m_connections.ContainsKey(connectionId)) {
 
-			Debug.Log("[" + m_connections[connectionId].name + "]: " + message);
+			DebugConsole.Log("[" + m_connections[connectionId].name + "]: " + message);
 		}
 		else {
 
-			Debug.Log("[" + connectionId + "]: " + message);
+			DebugConsole.Log("[" + connectionId + "]: " + message);
 		}
 	}
 
@@ -301,13 +370,13 @@ public class NetUtil {
 			// if is host send message to all connections
 			foreach (int connectionId in m_connections.Keys) {
 
-				SendMessage(m_outHost, connectionId, m_messageChannel, t_type, t_object, out error);
+				SendMessage(m_host, connectionId, m_messageChannel, t_type, t_object, out error);
 			}
 		}
 		else {
 
 			// if is client send message to host
-			SendMessage(m_outHost, m_hostId, m_messageChannel, t_type, t_object, out error);
+			SendMessage(m_host, m_hostId, m_messageChannel, t_type, t_object, out error);
 		}
 	}
 
@@ -324,13 +393,13 @@ public class NetUtil {
 			// if is host send message to all connections
 			foreach (int connectionId in m_connections.Keys) {
 
-				SendMessage(m_outHost, connectionId, m_lowSyncChannel, t_type, t_object, out error);
+				SendMessage(m_host, connectionId, m_lowSyncChannel, t_type, t_object, out error);
 			}
 		}
 		else {
 
 			// if is client send message to host
-			SendMessage(m_outHost, m_hostId, m_lowSyncChannel, t_type, t_object, out error);
+			SendMessage(m_host, m_hostId, m_lowSyncChannel, t_type, t_object, out error);
 		}
 	}
 
@@ -347,14 +416,22 @@ public class NetUtil {
 			// if is host send message to all connections
 			foreach (int connectionId in m_connections.Keys) {
 
-				SendMessage(m_outHost, connectionId, m_highSyncChannel, t_type, t_object, out error);
+				SendMessage(m_host, connectionId, m_highSyncChannel, t_type, t_object, out error);
 			}
 		}
 		else {
 
 			// if is client send message to host
-			SendMessage(m_outHost, m_hostId, m_highSyncChannel, t_type, t_object, out error);
+			SendMessage(m_host, m_hostId, m_highSyncChannel, t_type, t_object, out error);
 		}
 	}
 
+	/// <summary>
+	/// sends a talk message
+	/// </summary>
+	/// <param name="t_text">the text message to send</param>
+	public void Talk(string t_text) {
+
+		SendMessage(NetUtilMessageType.TALK, t_text);
+	}
 }
