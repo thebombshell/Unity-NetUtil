@@ -145,7 +145,7 @@ public class NetUtil {
 		byte error = 0;
 		m_hostId = NetworkTransport.Connect(m_outHost, t_ip, 7109, 0, out error);
 		AddConnection(m_hostId, "host");
-		SendMessage(m_hostId, NetUtilMessageType.CONNECTION_INFO, m_name, out error);
+		SendMessage(NetUtilMessageType.CONNECTION_INFO, m_name);
 	}
 
 	/// <summary>
@@ -205,26 +205,13 @@ public class NetUtil {
 	private void HandleData(int connectionId, byte[] buffer, int size) {
 
 		switch (buffer[0]) {
-			case NetUtilMessageType.CONNECTION_INFO: {
-
-				NetUtilConnection connection = new NetUtilConnection();
-				connection.name = ConstructType<string>(buffer, 1, size - 1);
-				connection.connectionId = connectionId;
-				HandleConnectionInfo(connection);
-			}
+			case NetUtilMessageType.CONNECTION_INFO:
+			
+				HandleConnectionInfo(connectionId, buffer, size);
 			break;
-			case NetUtilMessageType.TALK: {
+			case NetUtilMessageType.TALK:
 
-				string message = ConstructType<string>(buffer, 1, size - 1);
-				if (m_connections.ContainsKey(connectionId)) {
-
-					Debug.Log("[" + m_connections[connectionId].name + "]: " + message);
-				}
-				else {
-
-					Debug.Log("[" + connectionId + "]: " + message);
-				}
-			}
+				HandleTalk(connectionId, buffer, size);
 			break;
 		}
 	}
@@ -232,10 +219,28 @@ public class NetUtil {
 	/// <summary>
 	/// handles incoming connection info messages
 	/// </summary>
-	/// <param name="t_info">the information of the new connection</param>
-	private void HandleConnectionInfo(NetUtilConnection t_info) {
+	private void HandleConnectionInfo(int connectionId, byte[] buffer, int size) {
 
-		m_connections[t_info.connectionId] = t_info;
+		NetUtilConnection connection = new NetUtilConnection();
+		connection.name = ConstructType<string>(buffer, 1, size - 1);
+		connection.connectionId = connectionId;
+		m_connections[connectionId] = connection;
+	}
+
+	/// <summary>
+	/// handles incoming talk messages
+	/// </summary>
+	private void HandleTalk(int connectionId, byte[] buffer, int size) {
+
+		string message = ConstructType<string>(buffer, 1, size - 1);
+		if (m_connections.ContainsKey(connectionId)) {
+
+			Debug.Log("[" + m_connections[connectionId].name + "]: " + message);
+		}
+		else {
+
+			Debug.Log("[" + connectionId + "]: " + message);
+		}
 	}
 
 	/// <summary>
@@ -284,101 +289,71 @@ public class NetUtil {
 	}
 
 	/// <summary>
-	/// private helper function for sending low priority synchronization messages
+	/// helper function for sending messages which must arrive, and in order. (messages will always arrive)
 	/// </summary>
-	/// <param name="t_connection">connection id to send the message to</param>
 	/// <param name="t_type">type of message to send</param>
-	/// <param name="t_object">object associated with message</param>
-	/// <param name="error">out error from transport layer</param>
-	private void SendSync(int t_connection, byte t_type, object t_object, out byte error) {
-
-		SendMessage(m_outHost, t_connection, m_lowSyncChannel, t_type, t_object, out error);
-	}
-
-	/// <summary>
-	/// private helper function for sending priority synchronization messages
-	/// </summary>
-	/// <param name="t_connection">connection id to send the message to</param>
-	/// <param name="t_type">type of message to send</param>
-	/// <param name="t_object">object associated with message</param>
-	/// <param name="error">out error from transport layer</param>
-	private void SendPrioritySync(int t_connection, byte t_type, object t_object, out byte error) {
-
-		SendMessage(m_outHost, t_connection, m_highSyncChannel, t_type, t_object, out error);
-	}
-
-	/// <summary>
-	/// private helper function for sending garunteed messages
-	/// </summary>
-	/// <param name="t_connection">connection id to send the message to</param>
-	/// <param name="t_type">type of message to send</param>
-	/// <param name="t_object">object associated with message</param>
-	/// <param name="error">out error from transport layer</param>
-	private void SendMessage(int t_connection, byte t_type, object t_object, out byte error) {
-
-		SendMessage(m_outHost, t_connection, m_messageChannel, t_type, t_object, out error);
-	}
-
-	/// <summary>
-	/// 
-	/// </summary>
-	/// <param name="t_type"></param>
-	/// <param name="t_object"></param>
+	/// <param name="t_object">object to send with message</param>
 	public void SendMessage(byte t_type, object t_object) {
 
 		byte error;
 		if (m_isHost) {
 
+			// if is host send message to all connections
 			foreach (int connectionId in m_connections.Keys) {
 
-				SendMessage(connectionId, t_type, t_object, out error);
+				SendMessage(m_outHost, connectionId, m_messageChannel, t_type, t_object, out error);
 			}
 		}
 		else {
 
-			SendMessage(m_hostId, t_type, t_object, out error);
+			// if is client send message to host
+			SendMessage(m_outHost, m_hostId, m_messageChannel, t_type, t_object, out error);
 		}
 	}
 
 	/// <summary>
-	/// 
+	/// helper function for sending messages which may arrive, only in order. (messages may not arrive)
 	/// </summary>
-	/// <param name="t_type"></param>
-	/// <param name="t_object"></param>
+	/// <param name="t_type">type of message to send</param>
+	/// <param name="t_object">object to send with message</param>
 	public void SendSync(byte t_type, object t_object) {
 
 		byte error;
 		if (m_isHost) {
 
+			// if is host send message to all connections
 			foreach (int connectionId in m_connections.Keys) {
 
-				SendSync(connectionId, t_type, t_object, out error);
+				SendMessage(m_outHost, connectionId, m_lowSyncChannel, t_type, t_object, out error);
 			}
 		}
 		else {
 
-			SendSync(m_hostId, t_type, t_object, out error);
+			// if is client send message to host
+			SendMessage(m_outHost, m_hostId, m_lowSyncChannel, t_type, t_object, out error);
 		}
 	}
 
 	/// <summary>
-	/// 
+	/// helper function for sending messages which will arrive, only in order. (out of date messages may not arrive)
 	/// </summary>
-	/// <param name="t_type"></param>
-	/// <param name="t_object"></param>
+	/// <param name="t_type">type of message to send</param>
+	/// <param name="t_object">object to send with message</param>
 	public void SendPrioritySync(byte t_type, object t_object) {
 
 		byte error;
 		if (m_isHost) {
 
+			// if is host send message to all connections
 			foreach (int connectionId in m_connections.Keys) {
 
-				SendPrioritySync(connectionId, t_type, t_object, out error);
+				SendMessage(m_outHost, connectionId, m_highSyncChannel, t_type, t_object, out error);
 			}
 		}
 		else {
 
-			SendPrioritySync(m_hostId, t_type, t_object, out error);
+			// if is client send message to host
+			SendMessage(m_outHost, m_hostId, m_highSyncChannel, t_type, t_object, out error);
 		}
 	}
 
