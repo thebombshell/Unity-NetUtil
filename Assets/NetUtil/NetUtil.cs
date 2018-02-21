@@ -10,7 +10,8 @@ using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.Networking;
 using UnityEngine.Networking.Match;
-
+using UnityEngine.SceneManagement;
+using System.Net.Security;
 using Random = System.Random;
 
 /// <summary>
@@ -29,6 +30,7 @@ public static class NetUtilMessageType {
 	public const byte HOST_INFO = 2;
 	public const byte TALK = 3;
 	public const byte BROADCAST = 4;
+	public const byte CLIENT_UPDATE = 5;
 
 	public const byte CREATE_OBJECT = 8;
 	public const byte DESTROY_OBJECT = 9;
@@ -36,6 +38,10 @@ public static class NetUtilMessageType {
 	public const byte SET_SCENE = 11;
 
 	public const byte SYNC_TRANSFORM = 16;
+
+	public const byte CREATE_HOST_OBJECT = 32;
+	public const byte DESTROY_HOST_OBJECT = 33;
+	public const byte UPDATE_HOST_OBJECT = 34;
 
 	public const byte CUSTOM_MESSAGE = 255;
 }
@@ -45,7 +51,7 @@ public static class NetUtilMessageType {
 /// </summary>
 [Serializable]
 public enum NetUtilType : byte {
-	
+
 	/// <summary>
 	/// Listens to and collects information on joinable remote games
 	/// </summary>
@@ -65,7 +71,7 @@ public enum NetUtilType : byte {
 /// </summary>
 [Serializable]
 public struct NetUtilCustomMessage {
-	
+
 	/// <summary>
 	/// creates a message which triggers a netuitl message handler when recieved
 	/// </summary>
@@ -119,6 +125,9 @@ public struct NetUtilConnection {
 
 	public int connectionId;
 	public string name;
+	public float ping;
+	public float lastConfirmed;
+	public bool isClient;
 }
 
 /// <summary>
@@ -131,8 +140,18 @@ public struct NetUtilObjectCreator {
 	public string prefab;
 	public NetUtilVector3 position;
 	public NetUtilQuaternion rotation;
+	public bool isNetworked;
 	[SerializeField]
 	public object data;
+}
+
+[Serializable]
+public struct NetUtilHostObject {
+
+	public string name;
+	public string type;
+	public int connection;
+	public object hostObject;
 }
 
 /// <summary>
@@ -140,7 +159,7 @@ public struct NetUtilObjectCreator {
 /// </summary>
 [Serializable]
 public struct NetUtilSyncTransform {
-	
+
 	public NetUtilSyncTransform(string t_name, float t_time, Transform t_transform) {
 
 		name = t_name;
@@ -164,6 +183,7 @@ public struct NetUtilSyncTransform {
 public struct NetUtilHostState {
 
 	public float time;
+	public string scene;
 	public int salt;
 }
 
@@ -171,7 +191,7 @@ public struct NetUtilHostState {
 /// NetUtil state enumerables
 /// </summary>
 public enum NetUtilState : byte {
-	
+
 	UNINITIALIZED,
 	INITIALIZED,
 	CONNECTED
@@ -235,20 +255,20 @@ public class NetUtil {
 	/// <summary>
 	/// random number generator used for generating id's
 	/// </summary>
-	private static Random random;
+	private static Random g_random;
 
 	/// <summary>
 	/// generates a network unique identifier and salts it
 	/// </summary>
-	public string genId() {
+	public string GenId() {
 
 		DateTime epochStart = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 		double epochTime = (DateTime.UtcNow - epochStart).TotalSeconds;
-		if (random == null) {
+		if ( g_random == null ) {
 
-			random = new Random((int)epochTime);
+			g_random = new Random((int)epochTime);
 		}
-		string id = Convert.ToString((int)epochTime, 16) + Convert.ToString(random.Next(), 16) + Convert.ToString(random.Next(), 16) + Convert.ToString(m_isHost ? 0 : m_salt, 16);
+		string id = Convert.ToString((int)epochTime, 16) + Convert.ToString(g_random.Next(), 16) + Convert.ToString(g_random.Next(), 16) + Convert.ToString(isHost ? 0 : m_salt, 16);
 		return id;
 	}
 
@@ -258,11 +278,6 @@ public class NetUtil {
 	/// true if setup is successful
 	/// </summary>
 	private NetUtilState m_state = NetUtilState.UNINITIALIZED;
-
-	/// <summary>
-	/// true if net util is host
-	/// </summary>
-	private bool m_isHost;
 
 	/// <summary>
 	/// true if setup is successful
@@ -290,10 +305,10 @@ public class NetUtil {
 	/// true if net util is host
 	/// </summary>
 	public bool isHost {
-		
+
 		get {
 
-			return m_isHost;
+			return m_functionality == NetUtilType.HOST && (m_state == NetUtilState.INITIALIZED || m_state == NetUtilState.CONNECTED);
 		}
 	}
 
@@ -337,7 +352,7 @@ public class NetUtil {
 	/// the time at which the host was setup
 	/// </summary>
 	public float hostTime {
-		
+
 		get {
 
 			return m_hostTime;
@@ -357,7 +372,45 @@ public class NetUtil {
 	/// <summary>
 	/// the current network scene
 	/// </summary>
-	private string m_currentScene;
+	private string m_hostScene;
+
+	/// <summary>
+	/// the current scene of the host
+	/// </summary>
+	public string sceneName {
+		
+		get {
+
+			return m_hostScene;
+		}
+	}
+
+	/// <summary>
+	/// true if scene loaded is host scene
+	/// </summary>
+	public bool isSceneReady {
+		
+		get {
+
+			return m_hostScene == SceneManager.GetActiveScene().name;
+		}
+	}
+
+	/// <summary>
+	/// true if client is set up and ready to create network objects
+	/// </summary>
+	private bool m_isReady = false;
+
+	/// <summary>
+	/// true if proper level is loaded and client is ready to create network objects
+	/// </summary>
+	public bool isReady {
+
+		get {
+
+			return m_hostScene == SceneManager.GetActiveScene().name && m_isReady;
+		}
+	}
 
 	// local information
 
@@ -377,9 +430,24 @@ public class NetUtil {
 	private Dictionary<string, GameObject> m_gameObjects = new Dictionary<string, GameObject>();
 
 	/// <summary>
-	/// a list of game objects owned locally
+	/// a collection of network objects, associeted with a host on the network
 	/// </summary>
-	private List<string> m_localObjects = new List<string>();
+	private Dictionary<string, NetUtilHostObject> m_hostObjects = new Dictionary<string, NetUtilHostObject>(); 
+
+	/// <summary>
+	/// a dictionary of game object names, sorted by owner
+	/// </summary>
+	private Dictionary<int, List<string>> m_gameObjectNames = new Dictionary<int, List<string>>();
+
+	/// <summary>
+	/// a dictionary of host object names, sorted by owner
+	/// </summary>
+	private Dictionary<int, List<string>> m_hostObjectNames = new Dictionary<int, List<string>>();
+
+	/// <summary>
+	/// a collection of host object names, sorted by type
+	/// </summary>
+	private Dictionary<string, List<string>> m_hostObjectTypes = new Dictionary<string, List<string>>();
 
 	/// <summary>
 	/// a collection of remotely hosted games capable of being joined
@@ -430,6 +498,17 @@ public class NetUtil {
 	private int m_salt = 0;
 
 	/// <summary>
+	/// the salt of this host on the nextwork
+	/// </summary>
+	public int salt {
+		
+		get {
+
+			return m_salt;
+		}
+	}
+
+	/// <summary>
 	/// index of the host socket
 	/// </summary>
 	private int m_hostSocket;
@@ -455,6 +534,11 @@ public class NetUtil {
 	private int m_minorVersion;
 
 	/// <summary>
+	/// the time of the last ping check
+	/// </summary>
+	private float m_lastPing;
+
+	/// <summary>
 	/// the functionality type of the NetUtil
 	/// </summary>
 	private NetUtilType m_functionality;
@@ -463,12 +547,13 @@ public class NetUtil {
 	/// the functionality type of the NetUtil
 	/// </summary>
 	public NetUtilType functionality {
-		
+
 		get {
 
 			return m_functionality;
 		}
 	}
+	
 	// constructor
 
 	/// <summary>
@@ -476,9 +561,48 @@ public class NetUtil {
 	/// </summary>
 	/// <param name="t_name">name of this host on the network</param>
 	public NetUtil(int t_hostSocket = 7108, int t_clientSocket = 7109, int t_gameId = 69, int t_majorVersion = 1, int t_minorVersion = 0) {
-	
+
 		m_hostSocket = t_hostSocket;
 		m_clientSocket = t_clientSocket;
+		m_gameId = t_gameId;
+		m_majorVersion = t_majorVersion;
+		m_minorVersion = t_minorVersion;
+		m_lastPing = 0.0f;
+
+		SceneManager.activeSceneChanged += OnSceneChange;
+	}
+
+	/// <summary>
+	/// a callback function preparing the NetUtil in the event of a scene change
+	/// </summary>
+	private void OnSceneChange(Scene t_previousScene, Scene t_nextScene) {
+
+		if ( isHost ) {
+
+			m_hostScene = t_nextScene.name;
+			NetUtilObjectCreator[] activeObjects = new NetUtilObjectCreator[m_activeObjects.Count];
+			m_activeObjects.Values.CopyTo(activeObjects, 0);
+			foreach (NetUtilObjectCreator creator in activeObjects) {
+
+				DestroyObject(creator.name);
+			}
+			SendMessage(NetUtilMessageType.SET_SCENE, t_nextScene.name);
+		}
+	}
+
+	/// <summary>
+	/// sets the client to ready and creates all queued network objects
+	/// </summary>
+	public void SetReady() {
+	
+		foreach ( NetUtilObjectCreator creator in m_activeObjects.Values ) {
+
+			if ( !m_gameObjects.ContainsKey(creator.name) ) {
+
+				CreateLocalObject(creator.prefab, creator.name, creator.position.toVector3(), creator.rotation.toQuaternion(), true, creator.data);
+			}
+		}
+		m_isReady = true;
 	}
 
 	// setup
@@ -513,7 +637,7 @@ public class NetUtil {
 	private void Setup(NetUtilType t_type) {
 
 		// set up network transport
-		if (!NetworkTransport.IsStarted) {
+		if ( !NetworkTransport.IsStarted ) {
 
 			NetworkTransport.Init();
 		}
@@ -529,25 +653,28 @@ public class NetUtil {
 
 		// set up host
 
-		switch (t_type) {
+		switch ( t_type ) {
 
-			case NetUtilType.LISTENER: {
+		case NetUtilType.LISTENER: {
 
-				m_isHost = false;
-				m_host = NetworkTransport.AddHost(topology, m_clientSocket);
-				byte error;
-				NetworkTransport.SetBroadcastCredentials(m_host, m_gameId, m_majorVersion, m_minorVersion, out error);
-			} break;
-			case NetUtilType.HOST: {
+			m_isReady = false;
+			m_host = NetworkTransport.AddHost(topology, m_clientSocket);
+			byte error;
+			NetworkTransport.SetBroadcastCredentials(m_host, m_gameId, m_majorVersion, m_minorVersion, out error);
+		}
+		break;
+		case NetUtilType.HOST: {
 
-				m_isHost = true;
-				m_host = NetworkTransport.AddHost(topology, m_hostSocket);
-			} break;
-			case NetUtilType.CLIENT: {
+			m_isReady = true;
+			m_host = NetworkTransport.AddHost(topology, m_hostSocket);
+		}
+		break;
+		case NetUtilType.CLIENT: {
 
-				m_isHost = false;
-				m_host = NetworkTransport.AddHost(topology);
-			} break;
+			m_isReady = false;
+			m_host = NetworkTransport.AddHost(topology);
+		}
+		break;
 		}
 
 		m_functionality = t_type;
@@ -567,7 +694,6 @@ public class NetUtil {
 		// shut down hosts
 
 		m_state = NetUtilState.UNINITIALIZED;
-		m_isHost = false;
 		NetworkTransport.RemoveHost(m_host);
 	}
 
@@ -578,7 +704,7 @@ public class NetUtil {
 	public void Connect(string t_ip, int t_port = -1) {
 
 		byte error = 0;
-		if (t_port <= 0) {
+		if ( t_port <= 0 ) {
 
 			t_port = m_hostSocket;
 		}
@@ -616,14 +742,14 @@ public class NetUtil {
 	/// </summary>
 	/// <param name="t_gameName">the label of the game</param>
 	public WWW AdvertiseOnline(string t_gameName) {
-		
+
 		// find ip
 		IPHostEntry host;
 		string localIp = "";
 		host = Dns.GetHostEntry(Dns.GetHostName());
-		foreach (IPAddress ip in host.AddressList) {
+		foreach ( IPAddress ip in host.AddressList ) {
 
-			if (ip.AddressFamily == AddressFamily.InterNetwork) {
+			if ( ip.AddressFamily == AddressFamily.InterNetwork ) {
 
 				localIp = ip.ToString();
 				break;
@@ -639,7 +765,7 @@ public class NetUtil {
 		form.AddField("strnk_tnk_max_players", m_connections.Count);
 
 		// create request
-		return new WWW("http://127.0.0.1/php/stronk_tonk_advertise.php", form);
+		return new WWW("http://www.bombshell93.co.uk/php/stronk_tonk_advertise.php", form);
 	}
 
 	/// <summary>
@@ -658,9 +784,9 @@ public class NetUtil {
 	private void GetLANGames() {
 
 		List<NetUtilGameInfo> removeGames = new List<NetUtilGameInfo>();
-		foreach (NetUtilGameInfo info in m_lanGames) {
+		foreach ( NetUtilGameInfo info in m_lanGames ) {
 
-			if (Time.time - info.time > 3.0f) {
+			if ( Time.time - info.time > 3.0f ) {
 
 				removeGames.Add(info);
 			}
@@ -669,7 +795,7 @@ public class NetUtil {
 				m_remoteGames[info.ip] = info;
 			}
 		}
-		foreach (NetUtilGameInfo info in removeGames) {
+		foreach ( NetUtilGameInfo info in removeGames ) {
 
 			m_lanGames.Remove(info);
 		}
@@ -680,17 +806,17 @@ public class NetUtil {
 	/// </summary>
 	private void UpdateOnlineGames() {
 
-		if (m_onlineGamesQuery == null && Time.time - m_onlineGamesQueryTime > 3.0f) {
+		if ( m_onlineGamesQuery == null && Time.time - m_onlineGamesQueryTime > 3.0f ) {
 
 			m_onlineGamesQueryTime = Time.time;
-			m_onlineGamesQuery = new WWW("http://127.0.0.1/php/stronk_tonk_get_adverts.php");
+			m_onlineGamesQuery = new WWW("http://www.bombshell93.co.uk/php/stronk_tonk_get_adverts.php");
 		}
-		else if (m_onlineGamesQuery != null && m_onlineGamesQuery.isDone) {
+		else if ( m_onlineGamesQuery != null && m_onlineGamesQuery.isDone ) {
 
 			try {
 
 				NetUtilJSONGameList gameList = JsonUtility.FromJson<NetUtilJSONGameList>(m_onlineGamesQuery.text);
-				foreach (NetUtilJSONGameInfo game in gameList.games) {
+				foreach ( NetUtilJSONGameInfo game in gameList.games ) {
 
 					NetUtilGameInfo info;
 					info.name = game.name.Substring(0, game.name_length);
@@ -702,7 +828,7 @@ public class NetUtil {
 					m_onlineGames.Add(info);
 				}
 			}
-			catch (Exception e) {
+			catch ( Exception e ) {
 
 				DebugConsole.Log(e.Message);
 				DebugConsole.Log("json error: " + m_onlineGamesQuery.text);
@@ -718,9 +844,9 @@ public class NetUtil {
 	private void GetOnlineGames() {
 
 		List<NetUtilGameInfo> removeGames = new List<NetUtilGameInfo>();
-		foreach (NetUtilGameInfo info in m_onlineGames) {
+		foreach ( NetUtilGameInfo info in m_onlineGames ) {
 
-			if (Time.time - info.time > 3.0f) {
+			if ( Time.time - info.time > 3.0f ) {
 
 				removeGames.Add(info);
 			}
@@ -729,7 +855,7 @@ public class NetUtil {
 				m_remoteGames[info.ip] = info;
 			}
 		}
-		foreach (NetUtilGameInfo info in removeGames) {
+		foreach ( NetUtilGameInfo info in removeGames ) {
 
 			m_onlineGames.Remove(info);
 		}
@@ -745,16 +871,58 @@ public class NetUtil {
 		NetUtilConnection connection = new NetUtilConnection();
 		connection.connectionId = t_id;
 		connection.name = t_name;
+		connection.ping = 0.0f;
 		m_connections[t_id] = connection;
 	}
 
 	// handlers
 
 	/// <summary>
+	/// periodically updates ping values on host
+	/// </summary>
+	public void HandleConnections() {
+
+		if ( isHost && Time.time - m_lastPing > 3.0f ) {
+
+			NetUtilConnection connection;
+			foreach ( NetUtilConnection info in m_connections.Values ) {
+
+				connection = info;
+				connection.connectionId = 1 + info.connectionId;
+				connection.isClient = true;
+				SendSync(NetUtilMessageType.CONNECTION_INFO, connection);
+			}
+			connection = new NetUtilConnection();
+			connection.name = m_name;
+			connection.ping = 0.0f;
+			connection.isClient = false;
+			SendSync(NetUtilMessageType.CONNECTION_INFO, connection);
+
+			m_lastPing = Time.time;
+			SendMessage(NetUtilMessageType.CLIENT_UPDATE, m_lastPing);
+		}
+
+		List<int> timedOutConnections = new List<int>();
+
+		foreach ( NetUtilConnection info in m_connections.Values ) {
+
+			if ( Time.time - info.lastConfirmed > 10.0f ) {
+
+				timedOutConnections.Add(info.connectionId);
+			}
+		}
+
+		foreach ( int id in timedOutConnections ) {
+
+			m_connections.Remove(id);
+		}
+	}
+
+	/// <summary>
 	/// checks for and handles messages recieved via udp host
 	/// </summary>
 	public void HandleMessages() {
-		
+
 		int hostId;
 		int connectionId;
 		int channelId;
@@ -763,8 +931,8 @@ public class NetUtil {
 		byte error;
 		NetworkEventType eventType;
 
-		if (m_functionality == NetUtilType.LISTENER) {
-		
+		if ( m_functionality == NetUtilType.LISTENER ) {
+
 			UpdateOnlineGames();
 			UpdateRemoteGames();
 		}
@@ -772,29 +940,34 @@ public class NetUtil {
 		do {
 
 			eventType = NetworkTransport.Receive(out hostId, out connectionId, out channelId, buffer, 1024, out size, out error);
-			if (eventType != NetworkEventType.Nothing) {
-			
-				//DebugConsole.Log("[" + hostId + ", " + connectionId + ", " + channelId + "]: " + size + ", " + buffer[0]);
+			if ( eventType != NetworkEventType.Nothing ) {
+
+				//Debug.Log("[" + hostId + ", " + connectionId + ", " + channelId + ", " + eventType + "]: " + size + ", " + buffer[0]);
 			}
-			switch (eventType) {
+			switch ( eventType ) {
 
-				case NetworkEventType.DataEvent:
-					HandleData(connectionId, buffer, size);
-				break;
-				case NetworkEventType.ConnectEvent:
-					HandleConnect(connectionId);
-				break;
-				case NetworkEventType.DisconnectEvent:
-				break;
-				case NetworkEventType.BroadcastEvent:
-				if (m_functionality == NetUtilType.LISTENER) {
+			case NetworkEventType.DataEvent:
 
-					HandleBroadcast();
-				}
-				break;
+			HandleData(connectionId, buffer, size);
+			break;
+			case NetworkEventType.ConnectEvent:
+
+			HandleConnect(connectionId);
+			break;
+			case NetworkEventType.DisconnectEvent:
+
+			HandleDisconnect(connectionId);
+			break;
+			case NetworkEventType.BroadcastEvent:
+
+			if ( m_functionality == NetUtilType.LISTENER ) {
+
+				HandleBroadcast();
+			}
+			break;
 			}
 		}
-		while (eventType != NetworkEventType.Nothing);
+		while ( eventType != NetworkEventType.Nothing );
 	}
 
 	/// <summary>
@@ -805,39 +978,59 @@ public class NetUtil {
 	/// <param name="size">the size of the message</param>
 	private void HandleData(int connectionId, byte[] buffer, int size) {
 
-		switch (buffer[0]) {
-			case NetUtilMessageType.CONNECTION_INFO:
-			
-				HandleConnectionInfo(connectionId, buffer, size);
-			break;
-			case NetUtilMessageType.HOST_INFO:
+		switch ( buffer[0] ) {
+		case NetUtilMessageType.CONNECTION_INFO:
 
-				HandleHostInfo(connectionId, buffer, size);
-			break;
-			case NetUtilMessageType.TALK:
+		HandleConnectionInfo(connectionId, buffer, size);
+		break;
+		case NetUtilMessageType.HOST_INFO:
 
-				HandleTalk(connectionId, buffer, size);
-			break;
-			case NetUtilMessageType.CREATE_OBJECT:
+		HandleHostInfo(connectionId, buffer, size);
+		break;
+		case NetUtilMessageType.TALK:
 
-				HandleCreateObject(connectionId, buffer, size);
-			break;
-			case NetUtilMessageType.DESTROY_OBJECT:
+		HandleTalk(connectionId, buffer, size);
+		break;
+		case NetUtilMessageType.CREATE_OBJECT:
 
-				HandleDestroyObject(connectionId, buffer, size);
-			break;
-			case NetUtilMessageType.REQUEST_OBJECT:
+		HandleCreateObject(connectionId, buffer, size);
+		break;
+		case NetUtilMessageType.DESTROY_OBJECT:
 
-				HandleRequestObject(connectionId, buffer, size);
-			break;
-			case NetUtilMessageType.SYNC_TRANSFORM:
+		HandleDestroyObject(connectionId, buffer, size);
+		break;
+		case NetUtilMessageType.REQUEST_OBJECT:
 
-				HandleSyncTransform(connectionId, buffer, size);
-			break;
-			case NetUtilMessageType.CUSTOM_MESSAGE:
+		HandleRequestObject(connectionId, buffer, size);
+		break;
+		case NetUtilMessageType.SYNC_TRANSFORM:
 
-				HandleCustomMessage(connectionId, buffer, size);
-			break;
+		HandleSyncTransform(connectionId, buffer, size);
+		break;
+		case NetUtilMessageType.CREATE_HOST_OBJECT:
+
+		HandleCreateHostObject(connectionId, buffer, size);
+		break;
+		case NetUtilMessageType.DESTROY_HOST_OBJECT:
+
+		HandleDestroyHostObject(connectionId, buffer, size);
+		break;
+		case NetUtilMessageType.UPDATE_HOST_OBJECT:
+
+		HandleUpdateHostObject(connectionId, buffer, size);
+		break;
+		case NetUtilMessageType.CUSTOM_MESSAGE:
+
+		HandleCustomMessage(connectionId, buffer, size);
+		break;
+		case NetUtilMessageType.CLIENT_UPDATE:
+
+		HandleClientUpdate(connectionId, buffer, size);
+		break;
+		case NetUtilMessageType.SET_SCENE:
+
+		HandleSetScene(connectionId, buffer, size);
+		break;
 		}
 	}
 
@@ -846,24 +1039,29 @@ public class NetUtil {
 	/// </summary>
 	/// <param name="connectionId">connection id the message came from</param>
 	private void HandleConnect(int connectionId) {
-		
-		if (m_isHost) {
 
-			if (!m_connections.ContainsKey(connectionId)) {
-			
+		if ( isHost ) {
+
+			if ( !m_connections.ContainsKey(connectionId) ) {
+
 				AddConnection(connectionId, "");
 				byte error;
 
 				NetUtilHostState state = new NetUtilHostState();
 
 				state.time = m_hostTime;
+				state.scene = m_hostScene;
 				state.salt = ++m_salt;
 
 				SendMessage(m_host, connectionId, m_messageChannel, NetUtilMessageType.HOST_INFO, state, out error);
 
-				foreach (NetUtilObjectCreator creator in m_activeObjects.Values) {
+				foreach ( NetUtilObjectCreator creator in m_activeObjects.Values ) {
 
 					SendMessage(m_host, connectionId, m_messageChannel, NetUtilMessageType.CREATE_OBJECT, creator, out error);
+				}
+				foreach ( NetUtilHostObject hostObject in m_hostObjects.Values ) {
+
+					SendMessage(m_host, connectionId, m_messageChannel, NetUtilMessageType.CREATE_HOST_OBJECT, hostObject, out error);
 				}
 
 				m_state = NetUtilState.CONNECTED;
@@ -871,14 +1069,33 @@ public class NetUtil {
 		}
 		else {
 
-			if (connectionId != m_hostId) {
-			
+			if ( connectionId != m_hostId ) {
+
 				DebugConsole.Log("an unknown connection attempt has occured.");
 			}
 			else {
 
-				SendMessage(NetUtilMessageType.CONNECTION_INFO, m_name);
+				NetUtilConnection connection = new NetUtilConnection();
+				connection.connectionId = -1;
+				connection.name = m_name;
+				connection.ping = 0.0f;
+				SendMessage(NetUtilMessageType.CONNECTION_INFO, connection);
 			}
+		}
+	}
+
+	/// <summary>
+	/// handles disconnection
+	/// </summary>
+	private void HandleDisconnect(int connectionId) {
+
+		if ( !isHost && !m_connections[connectionId].isClient ) {
+
+			throw new Exception("You have been disconnected from the host");
+		}
+		else {
+
+			m_connections.Remove(connectionId);
 		}
 	}
 
@@ -904,8 +1121,8 @@ public class NetUtil {
 		gameInfo.ip = ip;
 		gameInfo.port = port;
 		gameInfo.time = Time.time;
-
-		m_remoteGames[gameInfo.ip + ":" + port] = gameInfo;
+		
+		m_lanGames.Add(gameInfo);
 	}
 
 	/// <summary>
@@ -913,10 +1130,30 @@ public class NetUtil {
 	/// </summary>
 	private void HandleConnectionInfo(int connectionId, byte[] buffer, int size) {
 
-		NetUtilConnection connection = new NetUtilConnection();
-		connection.name = ConstructType<string>(buffer, 1, size - 1);
-		connection.connectionId = connectionId;
-		m_connections[connectionId] = connection;
+		NetUtilConnection connection = ConstructType<NetUtilConnection>(buffer, 1, size - 1);
+		connection.lastConfirmed = Time.time;
+		if ( isHost ) {
+
+			connection.connectionId = connectionId;
+			connection.isClient = true;
+			foreach ( NetUtilConnection ownConnection in m_connections.Values ) {
+
+				if ( ownConnection.name == connection.name ) {
+
+					connection.name = connection.name + "#" + GenId();
+					break;
+				}
+			}
+			m_connections[connectionId] = connection;
+		}
+		else if ( connection.isClient ) {
+
+			m_connections[connection.connectionId] = connection;
+		}
+		else {
+
+			m_connections[connectionId] = connection;
+		}
 	}
 
 	/// <summary>
@@ -927,9 +1164,34 @@ public class NetUtil {
 		NetUtilHostState state = ConstructType<NetUtilHostState>(buffer, 1, size - 1);
 
 		m_hostTime = state.time;
+		m_hostScene = state.scene;
 		m_salt = state.salt;
 
+		if ( SceneManager.GetActiveScene().name != m_hostScene ) {
+
+			SceneManager.LoadScene(m_hostScene, LoadSceneMode.Single);
+		}
+
 		m_state = NetUtilState.CONNECTED;
+	}
+
+	/// <summary>
+	/// Handles client ping update messages
+	/// </summary>
+	private void HandleClientUpdate(int t_connectionId, byte[] t_buffer, int t_size) {
+
+		float time = ConstructType<float>(t_buffer, 1, t_size - 1);
+		if ( isHost ) {
+
+			NetUtilConnection connection = m_connections[t_connectionId];
+			connection.ping = Time.time - time;
+			connection.lastConfirmed = Time.time;
+			m_connections[t_connectionId] = connection;
+		}
+		else {
+
+			SendMessage(NetUtilMessageType.CLIENT_UPDATE, time);
+		}
 	}
 
 	/// <summary>
@@ -938,7 +1200,7 @@ public class NetUtil {
 	private void HandleTalk(int connectionId, byte[] buffer, int size) {
 
 		string message = ConstructType<string>(buffer, 1, size - 1);
-		if (m_connections.ContainsKey(connectionId)) {
+		if ( m_connections.ContainsKey(connectionId) ) {
 
 			DebugConsole.Log("[" + m_connections[connectionId].name + "]: " + message);
 		}
@@ -954,22 +1216,55 @@ public class NetUtil {
 	private void HandleCreateObject(int connectionId, byte[] buffer, int size) {
 
 		NetUtilObjectCreator message = ConstructType<NetUtilObjectCreator>(buffer, 1, size - 1);
-		CreateObject(message.prefab, message.position.toVector3(), message.rotation.toQuaternion(), message.data, message.name, connectionId);
+		CreateObject(message.prefab, message.position.toVector3(), message.rotation.toQuaternion(), message.data, message.isNetworked, message.name, connectionId);
 	}
 
 	/// <summary>
 	/// handles incoming destroy object messages
 	/// </summary>
 	private void HandleDestroyObject(int connectionId, byte[] buffer, int size) {
-		
+
 		string name = ConstructType<string>(buffer, 1, size - 1);
 
-		if (!m_gameObjects.ContainsKey(name)) {
+		if ( !m_gameObjects.ContainsKey(name) ) {
 
 			return;
 		}
 
 		DestroyObject(name, connectionId);
+	}
+
+	/// <summary>
+	/// handles incoming create object messages
+	/// </summary>
+	private void HandleCreateHostObject(int connectionId, byte[] buffer, int size) {
+
+		NetUtilHostObject message = ConstructType<NetUtilHostObject>(buffer, 1, size - 1);
+		CreateHostObject(message.type, message.hostObject, message.name, connectionId);
+	}
+
+	/// <summary>
+	/// handles incoming destroy object messages
+	/// </summary>
+	private void HandleDestroyHostObject(int connectionId, byte[] buffer, int size) {
+
+		string name = ConstructType<string>(buffer, 1, size - 1);
+
+		if ( !m_hostObjects.ContainsKey(name) ) {
+
+			return;
+		}
+
+		DestroyHostObject(name, connectionId);
+	}
+
+	/// <summary>
+	/// handles incoming update object messages
+	/// </summary>
+	private void HandleUpdateHostObject(int connectionId, byte[] buffer, int size) {
+
+		NetUtilHostObject message = ConstructType<NetUtilHostObject>(buffer, 1, size - 1);
+		UpdateHostObject(message.name, message.hostObject, connectionId);
 	}
 
 	/// <summary>
@@ -982,6 +1277,20 @@ public class NetUtil {
 	}
 
 	/// <summary>
+	/// handles incoming set scene messages
+	/// </summary>
+	private void HandleSetScene(int connectionId, byte[] buffer, int size) {
+
+		if ( !isHost ) {
+
+			m_hostScene = ConstructType<string>(buffer, 1, size - 1);
+			m_activeObjects.Clear();
+			m_isReady = false;
+			SceneManager.LoadScene(m_hostScene, LoadSceneMode.Single);
+		}
+	}
+
+	/// <summary>
 	/// handles incoming sync transform messages
 	/// </summary>
 	private void HandleSyncTransform(int connectionId, byte[] buffer, int size) {
@@ -990,7 +1299,7 @@ public class NetUtil {
 			NetUtilSyncTransform message = ConstructType<NetUtilSyncTransform>(buffer, 1, size - 1);
 			SyncTransform(message, connectionId);
 		}
-		catch (Exception e) {
+		catch ( Exception ) {
 
 			Debug.Log(buffer.Length);
 			Debug.Log(size);
@@ -1003,20 +1312,28 @@ public class NetUtil {
 	private void HandleCustomMessage(int connectionId, byte[] buffer, int size) {
 
 		NetUtilCustomMessage message = ConstructType<NetUtilCustomMessage>(buffer, 1, size - 1);
-		if (message.isTargeted) {
-			
-			if (m_gameObjects.ContainsKey(message.target)) {
-
-				m_gameObjects[message.target].BroadcastMessage(message.name, message.data);
-			}
-		}
-		else if (m_messageHandlers.ContainsKey(message.name)) {
-
-			m_messageHandlers[message.name](message.data);
-		}
-		if (m_isHost) {
+		HandleCustomMessage(message);
+		if ( isHost ) {
 
 			SendMessage(message, connectionId);
+		}
+	}
+
+	/// <summary>
+	/// enacts custom messages instructions
+	/// </summary>
+	private void HandleCustomMessage(NetUtilCustomMessage t_message) {
+
+		if ( t_message.isTargeted ) {
+
+			if ( m_gameObjects.ContainsKey(t_message.target) ) {
+
+				m_gameObjects[t_message.target].BroadcastMessage(t_message.name, t_message.data);
+			}
+		}
+		else if ( m_messageHandlers.ContainsKey(t_message.name) ) {
+
+			m_messageHandlers[t_message.name](t_message.data);
 		}
 	}
 
@@ -1064,7 +1381,7 @@ public class NetUtil {
 	private void SendMessage(int t_host, int t_connection, int t_channel, byte t_type, object t_object, out byte error) {
 
 		byte[] buffer = ConstructMessage(t_type, t_object);
-		if (buffer.Length > 1024) {
+		if ( buffer.Length > 1024 ) {
 
 			throw new ArgumentException("this message is too large to be handled properly");
 		}
@@ -1082,18 +1399,18 @@ public class NetUtil {
 	private void SendMessage(byte t_type, object t_object, int t_connectionOrigin = -1) {
 
 		byte error;
-		if (m_isHost) {
+		if ( isHost ) {
 
 			// if is host send message to all connections
-			foreach (int connectionId in m_connections.Keys) {
+			foreach ( int connectionId in m_connections.Keys ) {
 
-				if (connectionId != t_connectionOrigin) {
-				
+				if ( connectionId != t_connectionOrigin ) {
+
 					SendMessage(m_host, connectionId, m_messageChannel, t_type, t_object, out error);
 				}
 			}
 		}
-		else if (m_hostId != t_connectionOrigin) {
+		else if ( m_hostId != t_connectionOrigin ) {
 
 			// if is client send message to host
 			SendMessage(m_host, m_hostId, m_messageChannel, t_type, t_object, out error);
@@ -1109,18 +1426,18 @@ public class NetUtil {
 	private void SendSync(byte t_type, object t_object, int t_connectionOrigin = -1) {
 
 		byte error;
-		if (m_isHost) {
+		if ( isHost ) {
 
 			// if is host send message to all connections
-			foreach (int connectionId in m_connections.Keys) {
+			foreach ( int connectionId in m_connections.Keys ) {
 
-				if (connectionId != t_connectionOrigin) {
-				
+				if ( connectionId != t_connectionOrigin ) {
+
 					SendMessage(m_host, connectionId, m_lowSyncChannel, t_type, t_object, out error);
 				}
 			}
 		}
-		else if (m_hostId != t_connectionOrigin) {
+		else if ( m_hostId != t_connectionOrigin ) {
 
 			// if is client send message to host
 			SendMessage(m_host, m_hostId, m_lowSyncChannel, t_type, t_object, out error);
@@ -1136,18 +1453,18 @@ public class NetUtil {
 	private void SendPrioritySync(byte t_type, object t_object, int t_connectionOrigin = -1) {
 
 		byte error;
-		if (m_isHost) {
+		if ( isHost ) {
 
 			// if is host send message to all connections
-			foreach (int connectionId in m_connections.Keys) {
+			foreach ( int connectionId in m_connections.Keys ) {
 
-				if (connectionId != t_connectionOrigin) {
+				if ( connectionId != t_connectionOrigin ) {
 
 					SendMessage(m_host, connectionId, m_highSyncChannel, t_type, t_object, out error);
 				}
 			}
 		}
-		else if (m_hostId != t_connectionOrigin) {
+		else if ( m_hostId != t_connectionOrigin ) {
 
 			// if is client send message to host
 			SendMessage(m_host, m_hostId, m_highSyncChannel, t_type, t_object, out error);
@@ -1164,6 +1481,7 @@ public class NetUtil {
 	public void SendMessage(NetUtilCustomMessage t_message, int t_connectionOrigin = -1) {
 
 		SendMessage(NetUtilMessageType.CUSTOM_MESSAGE, t_message, t_connectionOrigin);
+		HandleCustomMessage(t_message);
 	}
 
 	/// <summary>
@@ -1174,6 +1492,7 @@ public class NetUtil {
 	public void SendSync(NetUtilCustomMessage t_message, int t_connectionOrigin = -1) {
 
 		SendSync(NetUtilMessageType.CUSTOM_MESSAGE, t_message, t_connectionOrigin);
+		HandleCustomMessage(t_message);
 	}
 
 	/// <summary>
@@ -1184,6 +1503,7 @@ public class NetUtil {
 	public void SendPrioritySync(NetUtilCustomMessage t_message, int t_connectionOrigin = -1) {
 
 		SendPrioritySync(NetUtilMessageType.CUSTOM_MESSAGE, t_message, t_connectionOrigin);
+		HandleCustomMessage(t_message);
 	}
 
 	// wrapped up message senders
@@ -1206,30 +1526,28 @@ public class NetUtil {
 	/// <param name="t_data">a serializable object to pass other creation data with</param>
 	/// <param name="t_connectionOrigin">the origin of the create object message, defaults to -1 for local</param>
 	/// <returns>the unique netutil name of the object</returns>
-	public string CreateObject(string t_prefab, Vector3 t_position, Quaternion t_rotation, object t_data, string t_name = "", int t_connectionOrigin = -1) {
-
-		// ensure the prefab exists
-		if (!m_prefabs.ContainsKey(t_prefab)) {
-
-			throw new ArgumentException("\"" + t_prefab + "\" is a prefab not registered in netuitl");
-		}
+	public string CreateObject(string t_prefab, Vector3 t_position, Quaternion t_rotation, object t_data, bool t_isNetworked = true, string t_name = "", int t_connectionOrigin = -1) {
 
 		// ensure a dupplicate is not being made
-		if (m_gameObjects.ContainsKey(t_name)) {
+		if ( m_gameObjects.ContainsKey(t_name) ) {
 
 			throw new ArgumentException("\"" + t_name + "\" is already the name of a network gameobject");
 		}
 
 		// ensure the data object is valid
-		if (!t_data.GetType().IsSerializable) {
+		if ( t_data == null ) {
+
+			t_data = "";
+		}
+		else if ( !t_data.GetType().IsSerializable ) {
 
 			throw new ArgumentException("the type \"" + t_data.GetType().FullName + "\" is not serializable and can not be properly sent over network");
 		}
 
 		// if no name for the object is given, generate one
-		if (t_name == "") {
+		if ( t_name == "" ) {
 
-			t_name = genId();
+			t_name = GenId();
 		}
 
 		NetUtilObjectCreator creator = new NetUtilObjectCreator();
@@ -1237,17 +1555,31 @@ public class NetUtil {
 		creator.prefab = t_prefab;
 		creator.position = new NetUtilVector3(t_position);
 		creator.rotation = new NetUtilQuaternion(t_rotation);
+		creator.isNetworked = t_isNetworked;
 		creator.data = t_data;
 
-		if (m_isHost) {
+
+		// if object is networked, add to relevant lists
+		if ( t_isNetworked ) {
 
 			m_activeObjects[t_name] = creator;
-		}
-		SendMessage(NetUtilMessageType.CREATE_OBJECT, creator, t_connectionOrigin);
-		CreateLocalObject(t_prefab, t_name, t_position, t_rotation, t_data);
-		if (t_connectionOrigin == -1) {
 
-			m_localObjects.Add(t_name);
+			// if created localled add to local authority objects
+			if ( !m_gameObjectNames.ContainsKey(t_connectionOrigin) ) {
+
+				m_gameObjectNames.Add(t_connectionOrigin, new List<string>());
+			}
+			m_gameObjectNames[t_connectionOrigin].Add(t_name);
+		}
+		// if is ready to spawn objects, proceed
+		if ( isReady ) {
+
+			SendMessage(NetUtilMessageType.CREATE_OBJECT, creator, t_connectionOrigin);
+			CreateLocalObject(t_prefab, t_name, t_position, t_rotation, t_isNetworked, t_data);
+		}
+		else {
+
+			Debug.Log("Not Ready");
 		}
 		return t_name;
 	}
@@ -1258,18 +1590,25 @@ public class NetUtil {
 	/// <param name="t_name">the name of the network game object to destroy</param>
 	/// <param name="t_connectionOrigin">the origin of the create object message, defaults to -1 for local</param>
 	public void DestroyObject(string t_name, int t_connectionOrigin = -1) {
-		
-		if (!m_gameObjects.ContainsKey(t_name)) {
+
+		if ( !m_gameObjects.ContainsKey(t_name) ) {
 
 			throw new ArgumentException("\"" + t_name + "\" is not an existing netutil game object");
 		}
+		m_activeObjects.Remove(t_name);
+		foreach ( int connection in m_gameObjectNames.Keys ) {
 
-		if (m_isHost) {
+			if ( m_gameObjectNames[connection].Contains(t_name) ) {
 
-			m_activeObjects.Remove(t_name);
+				m_gameObjectNames[connection].Remove(t_name);
+				break;
+			}
 		}
-		SendMessage(NetUtilMessageType.DESTROY_OBJECT, t_name, t_connectionOrigin);
-		DestroyLocalObject(t_name);
+		if ( isReady ) {
+
+			SendMessage(NetUtilMessageType.DESTROY_OBJECT, t_name, t_connectionOrigin);
+			DestroyLocalObject(t_name);
+		}
 	}
 
 	/// <summary>
@@ -1280,40 +1619,146 @@ public class NetUtil {
 	public void RequestObject(string t_name, int t_connectionOrigin = -1) {
 
 		// ensure the object exists
-		if (!m_gameObjects.ContainsKey(t_name)) {
+		if ( !m_gameObjects.ContainsKey(t_name) ) {
 
 			throw new ArgumentException("\"" + t_name + "\" is not an existing netutil game object");
 		}
 
 		// if called locally
-		if (t_connectionOrigin == -1) {
+		if ( t_connectionOrigin == -1 ) {
 
 			// ensure object is not already owned
-			if (m_localObjects.Contains(t_name)) {
-			
+			if ( m_gameObjectNames.ContainsKey(-1) && m_gameObjectNames[-1].Contains(t_name) ) {
+
 				throw new ArgumentException("\"" + t_name + "\" is already owned locally");
 			}
 			SendMessage(NetUtilMessageType.REQUEST_OBJECT, t_name, t_connectionOrigin);
-			m_localObjects.Add(t_name);
+			if ( !m_gameObjectNames.ContainsKey(-1) ) {
+
+				m_gameObjectNames.Add(-1, new List<string>());
+			}
+			m_gameObjectNames[-1].Add(t_name);
 			m_gameObjects[t_name].BroadcastMessage("NetUtilAuthorityGranted");
 		}
 		// if called remotely
 		else {
 
 			// if has object relinquish ownership of object
-			if (m_localObjects.Contains(t_name)) {
+			if ( m_gameObjectNames.ContainsKey(-1) && m_gameObjectNames[-1].Contains(t_name) ) {
 
 				DebugConsole.Log("I have relinquished control of " + t_name);
 				m_gameObjects[t_name].BroadcastMessage("NetUtilAuthoritySiezed");
-				m_localObjects.Remove(t_name);
+				m_gameObjectNames[-1].Remove(t_name);
 			}
 			// else propogate the message
 			else {
-			
+
 				SendMessage(NetUtilMessageType.REQUEST_OBJECT, t_name, t_connectionOrigin);
 			}
 		}
 
+	}
+
+	/// <summary>
+	/// creates a host object over the network
+	/// </summary>
+	/// <param name="t_object">the host object to create</param>
+	/// <param name="t_connectionOrigin">the origin of the create object message, defaults to -1 for local</param>
+	/// <returns>the unique netutil name of the object</returns>
+	public string CreateHostObject(string t_type, object t_data = null, string t_name = "", int t_connectionOrigin = -1) {
+
+		// ensure a dupplicate is not being made
+		if ( m_hostObjects.ContainsKey(t_name) ) {
+
+			throw new ArgumentException("\"" + t_name + "\" is already the name of a network host object");
+		}
+
+		// ensure the data object is valid
+		if ( t_data == null ) {
+
+			t_data = "";
+		}
+		else if ( !t_data.GetType().IsSerializable ) {
+
+			throw new ArgumentException("the type \"" + t_data.GetType().FullName + "\" is not serializable and can not be properly sent over network");
+		}
+
+		// if no name for the object is given, generate one
+		if ( t_name == "" ) {
+
+			t_name = GenId();
+		}
+
+		NetUtilHostObject hostObject = new NetUtilHostObject();
+		hostObject.name = t_name;
+		hostObject.type = t_type;
+		hostObject.hostObject = t_data;
+		if ( !m_hostObjectTypes.ContainsKey(t_type) ) {
+
+			m_hostObjectTypes.Add(t_type, new List<string>());
+		}
+		m_hostObjectTypes[t_type].Add(t_name);
+		m_hostObjects[t_name] = hostObject;
+		SendMessage(NetUtilMessageType.CREATE_HOST_OBJECT, hostObject, t_connectionOrigin);
+		if ( !m_hostObjectNames.ContainsKey(t_connectionOrigin) ) {
+
+			m_hostObjectNames.Add(t_connectionOrigin, new List<string>());
+		}
+		m_hostObjectNames[t_connectionOrigin].Add(t_name);
+		return t_name;
+	}
+
+	/// <summary>
+	/// destroys a host object over the network
+	/// </summary>
+	/// <param name="t_name">the name of the host object to destroy</param>
+	/// <param name="t_connectionOrigin">the origin of the create object message, defaults to -1 for local</param>
+	public void DestroyHostObject(string t_name, int t_connectionOrigin = -1) {
+
+		if ( !m_hostObjects.ContainsKey(t_name) ) {
+
+			throw new ArgumentException("\"" + t_name + "\" is not an existing netutil host object");
+		}
+		string type = m_hostObjects[t_name].type;
+		m_hostObjectTypes[type].Remove(t_name);
+		if ( m_hostObjectTypes[type].Count <= 0 ) {
+
+			m_hostObjectTypes.Remove(type);
+		}
+		m_hostObjects.Remove(t_name);
+		SendMessage(NetUtilMessageType.DESTROY_HOST_OBJECT, t_name, t_connectionOrigin);
+		foreach ( int connection in m_hostObjectNames.Keys ) {
+
+			if ( m_hostObjectNames[connection].Contains(t_name) ) {
+
+				m_hostObjectNames[connection].Remove(t_name);
+				break;
+			}
+		}
+	}
+
+	/// <summary>
+	/// updates a host object over the network
+	/// </summary>
+	/// <param name="t_name">the name of the host object to update</param>
+	/// <param name="t_data">the new data to be held in host object</param>
+	/// <param name="t_connectionOrigin">the origin of the create object message, defaults to -1 for local</param>
+	public void UpdateHostObject(string t_name,  object t_data = null, int t_connectionOrigin = -1) {
+
+		if ( !m_hostObjects.ContainsKey(t_name) ) {
+
+			throw new ArgumentException("\"" + t_name + "\" is not an existing netutil host object");
+		}
+		if ( t_data == null ) {
+
+			t_data = "";
+		}
+		NetUtilHostObject hostObject = new NetUtilHostObject();
+		hostObject.name = t_name;
+		hostObject.type = m_hostObjects[t_name].type;
+		hostObject.hostObject = t_data;
+		m_hostObjects[t_name] = hostObject;
+		SendMessage(NetUtilMessageType.UPDATE_HOST_OBJECT, hostObject, t_connectionOrigin);
 	}
 
 	/// <summary>
@@ -1324,16 +1769,16 @@ public class NetUtil {
 	/// <param name="t_connectionOrigin">the origin of the create object message, defaults to -1 for local</param>
 	public void SyncTransform(NetUtilSyncTransform t_message, int t_connectionOrigin = -1) {
 
-		if (t_connectionOrigin == -1 && !m_gameObjects.ContainsKey(t_message.name)) {
-		
+		if ( t_connectionOrigin == -1 && !m_gameObjects.ContainsKey(t_message.name) ) {
+
 			throw new ArgumentException("\"" + t_message.name + "\" is not an existing netutil game object");
 		}
-		if (!m_gameObjects.ContainsKey(t_message.name)) {
+		if ( !m_gameObjects.ContainsKey(t_message.name) ) {
 
 			return;
 		}
 		SendPrioritySync(NetUtilMessageType.SYNC_TRANSFORM, t_message, t_connectionOrigin);
-		if (t_connectionOrigin != -1) {
+		if ( t_connectionOrigin != -1 ) {
 
 			m_gameObjects[t_message.name].BroadcastMessage("NetUtilSyncTransform", t_message);
 		}
@@ -1349,12 +1794,27 @@ public class NetUtil {
 	/// <param name="t_position">the spawn position of the object</param>
 	/// <param name="t_rotation">the spawn rotation of the object</param>
 	/// <param name="t_data">a serializable object to pass other creation data with</param>
-	private void CreateLocalObject(string t_prefab, string t_name, Vector3 t_position, Quaternion t_rotation, object t_data) {
+	private void CreateLocalObject(string t_prefab, string t_name, Vector3 t_position, Quaternion t_rotation, bool t_isNetworked, object t_data) {
+
+		// ensure the prefab exists
+		if ( !m_prefabs.ContainsKey(t_prefab) ) {
+
+			throw new ArgumentException("\"" + t_prefab + "\" is a prefab not registered in netuitl");
+		}
 
 		GameObject gameObject = GameObject.Instantiate(m_prefabs[t_prefab], t_position, t_rotation);
 		gameObject.name = t_name;
-		m_gameObjects[t_name] = gameObject;
-		gameObject.BroadcastMessage("NetUtilInitialize", t_data);
+		if ( t_isNetworked ) {
+
+			m_gameObjects[t_name] = gameObject;
+		}
+		try {
+
+			gameObject.SendMessage("NetUtilInitialize", t_data);
+		}
+		catch (Exception) {
+
+		}
 	}
 
 	/// <summary>
@@ -1362,12 +1822,8 @@ public class NetUtil {
 	/// </summary>
 	/// <param name="t_name">the name of the object to destroy</param>
 	private void DestroyLocalObject(string t_name) {
-	
-		GameObject gameObject = m_gameObjects[t_name];
-		if (m_localObjects.Contains(t_name)) {
 
-			m_localObjects.Remove(t_name);
-		}
+		GameObject gameObject = m_gameObjects[t_name];
 		m_gameObjects.Remove(t_name);
 		GameObject.Destroy(gameObject);
 	}
@@ -1400,7 +1856,16 @@ public class NetUtil {
 	/// <param name="t_name">the name of the object</param>
 	public bool OwnsObject(string t_name) {
 
-		return m_localObjects.Contains(t_name);
+		return m_gameObjectNames.ContainsKey(-1) && m_gameObjectNames[-1].Contains(t_name);
+	}
+
+	/// <summary>
+	/// returns true if a network host object is owned locally
+	/// </summary>
+	/// <param name="t_name">the name of the local host object</param>
+	public bool OwnsHostObject(string t_name) {
+
+		return m_hostObjectNames.ContainsKey(-1) && m_hostObjectNames[-1].Contains(t_name);
 	}
 
 	/// <summary>
@@ -1422,12 +1887,60 @@ public class NetUtil {
 	}
 
 	/// <summary>
+	/// returns a local instance of a network host object
+	/// </summary>
+	/// <param name="t_name">the network name of the host object</param>
+	public object GetHostObject(string t_name) {
+
+		if ( !m_hostObjects.ContainsKey(t_name) ) {
+
+			throw new ArgumentOutOfRangeException("A host object of name \"" + t_name + "\" does not exist.");
+		}
+		return m_hostObjects[t_name].hostObject;
+	}
+	
+	/// <summary>
+	/// returns a list of network names relating to host objects of the given type
+	/// </summary>
+	/// <param name="t_type">the name of the type of host object to get</param>
+	public List<string> GetHostObjectNames(string t_type) {
+
+		List<string> output = new List<string>();
+
+		if ( m_hostObjectTypes.ContainsKey(t_type) ) {
+
+			output.AddRange(m_hostObjectTypes[t_type]);
+		}
+		return output;
+	}
+
+	/// <summary>
 	/// returns a collection of detected remote games capable of being joined
 	/// </summary>
 	public NetUtilGameInfo[] GetGameList() {
-	
+
 		NetUtilGameInfo[] output = new NetUtilGameInfo[m_remoteGames.Count];
 		m_remoteGames.Values.CopyTo(output, 0);
 		return output;
+	}
+	
+	/// <summary>
+	/// returns a list of connections to the host including name and ping
+	/// </summary>
+	public NetUtilConnection[] GetConnections() {
+
+		NetUtilConnection[] connections = new NetUtilConnection[isHost ? m_connections.Count + 1 : m_connections.Count];
+		m_connections.Values.CopyTo(connections, 0);
+		if ( isHost ) {
+
+			NetUtilConnection hostConnection = new NetUtilConnection();
+			hostConnection.connectionId = -1;
+			hostConnection.name = m_name;
+			hostConnection.isClient = false;
+			hostConnection.ping = 0.0f;
+			hostConnection.lastConfirmed = Time.time;
+			connections[m_connections.Count] = hostConnection;
+		}
+		return connections;
 	}
 }

@@ -20,22 +20,27 @@ public static class NetUtilManager {
 	/// <summary>
 	/// a singleton instance of netutil
 	/// </summary>
-	private static NetUtil m_singleton;
+	private static NetUtil g_singleton;
 
+    public static NetUtil singleton {
+        get {
+            return g_singleton;
+        }
+    }
 	/// <summary>
 	/// the current state of online advert
 	/// </summary>
-	private static WWW m_advertQuery;
+	private static WWW g_advertQuery;
 
 	/// <summary>
 	/// the timer used for online adverts
 	/// </summary>
-	private static float m_advertTimer;
+	private static float g_advertTimer;
 
 	/// <summary>
 	/// the name of the currently hosted game
 	/// </summary>
-	private static string m_gameName;
+	private static string g_gameName;
 
 	/// <summary>
 	/// true if netutil has been setup
@@ -44,7 +49,7 @@ public static class NetUtilManager {
 
 		get {
 
-			return m_singleton != null;
+			return g_singleton != null;
 		}
 	}
 
@@ -55,7 +60,7 @@ public static class NetUtilManager {
 
 		get {
 
-			return m_singleton.isSetup;
+			return g_singleton.isSetup;
 		}
 	}
 
@@ -66,7 +71,7 @@ public static class NetUtilManager {
 		
 		get {
 
-			return m_singleton.isConnected;
+			return g_singleton.isConnected;
 		}
 	}
 
@@ -77,7 +82,7 @@ public static class NetUtilManager {
 		
 		get {
 
-			return m_singleton.isHost;
+			return g_singleton.isHost;
 		}
 	}
 
@@ -88,7 +93,29 @@ public static class NetUtilManager {
 		
 		get {
 
-			return m_singleton.hostTime;
+			return g_singleton.hostTime;
+		}
+	}
+
+	/// <summary>
+	/// true if netutil is ready to accept network messages
+	/// </summary>
+	public static bool isReady {
+		
+		get {
+
+			return g_singleton.isReady;
+		}
+	}
+
+	/// <summary>
+	/// true if scene is the same as host
+	/// </summary>
+	public static bool isSceneReady {
+
+		get {
+
+			return g_singleton.isSceneReady;
 		}
 	}
 
@@ -97,8 +124,8 @@ public static class NetUtilManager {
 	/// </summary>
 	public static void Setup() {
 
-		m_singleton = new NetUtil(7108, 7109);
-		m_singleton.SetupListener();
+		g_singleton = new NetUtil(7108, 7109);
+		g_singleton.SetupListener();
 	}
 
 	/// <summary>
@@ -106,8 +133,8 @@ public static class NetUtilManager {
 	/// </summary>
 	public static void Host() {
 
-		m_singleton.Shutdown();
-		m_singleton.SetupHost();
+		g_singleton.Shutdown();
+		g_singleton.SetupHost();
 	}
 
 	/// <summary>
@@ -116,8 +143,8 @@ public static class NetUtilManager {
 	/// <param name="t_name">the label of the game</param>
 	public static void StartAdvertiseLAN(string t_name) {
 
-		m_gameName = t_name;
-		m_singleton.StartAdvertiseLAN(m_gameName);
+		g_gameName = t_name;
+		g_singleton.StartAdvertiseLAN(g_gameName);
 	}
 
 	/// <summary>
@@ -125,7 +152,7 @@ public static class NetUtilManager {
 	/// </summary>
 	public static void StopAdvertiseLAN() {
 
-		m_singleton.StopAdvertiseLAN();
+		g_singleton.StopAdvertiseLAN();
 	}
 
 	/// <summary>
@@ -134,13 +161,13 @@ public static class NetUtilManager {
 	/// <param name="t_name">the label of the game</param>
 	public static void StartAdvertiseOnline(string t_name) {
 
-		if (m_advertQuery != null) {
+		if (g_advertQuery != null) {
 		
-			m_advertQuery.Dispose();
+			g_advertQuery.Dispose();
 		}
-		m_gameName = t_name;
-		m_advertQuery = m_singleton.AdvertiseOnline(m_gameName);
-		m_advertTimer = Time.time;
+		g_gameName = t_name;
+		g_advertQuery = g_singleton.AdvertiseOnline(g_gameName);
+		g_advertTimer = Time.time;
 	}
 
 	/// <summary>
@@ -148,8 +175,8 @@ public static class NetUtilManager {
 	/// </summary>
 	public static void StopAdvertiseOnline() {
 
-		m_advertQuery.Dispose();
-		m_advertQuery = null;
+		g_advertQuery.Dispose();
+		g_advertQuery = null;
 	}
 
 	/// <summary>
@@ -158,9 +185,9 @@ public static class NetUtilManager {
 		/// <param name="t_ip">the ip address of the host</param>
 	public static void Connect(string t_ip, int t_port) {
 
-		m_singleton.Shutdown();
-		m_singleton.SetupClient();
-		m_singleton.Connect(t_ip, t_port);
+		g_singleton.Shutdown();
+		g_singleton.SetupClient();
+		g_singleton.Connect(t_ip, t_port);
 	}
 	
 	/// <summary>
@@ -168,7 +195,7 @@ public static class NetUtilManager {
 	/// </summary>
 	public static void Disconnect() {
 
-		m_singleton.Shutdown();
+		g_singleton.Shutdown();
 	}
 
 	/// <summary>
@@ -176,7 +203,7 @@ public static class NetUtilManager {
 	/// </summary>
 	public static void Shutdown() {
 	
-		m_singleton = null;
+		g_singleton = null;
 	}
 
 	/// <summary>
@@ -185,7 +212,7 @@ public static class NetUtilManager {
 	/// <param name="t_text">the messages to speak</param>
 	public static void Talk(string t_text) {
 
-		m_singleton.Talk(t_text);
+		g_singleton.Talk(t_text);
 	}
 
 	/// <summary>
@@ -196,9 +223,9 @@ public static class NetUtilManager {
 	/// <param name="t_rotation">the rotation of the game object</param>
 	/// <param name="t_data">a serializable object to pass to the created object</param>
 	/// <returns>returns the network name of the object</returns>
-	public static string CreateObject(string t_prefab, Vector3 t_position, Quaternion t_rotation, object t_data) {
+	public static string CreateObject(string t_prefab, Vector3 t_position, Quaternion t_rotation, object t_data, bool t_isNetworked = true) {
 
-		return m_singleton.CreateObject(t_prefab, t_position, t_rotation, t_data);
+		return g_singleton.CreateObject(t_prefab, t_position, t_rotation, t_data, t_isNetworked);
 	}
 
 	/// <summary>
@@ -207,7 +234,37 @@ public static class NetUtilManager {
 	/// <param name="t_name">the name of the object</param>
 	public static void DestroyObject(string t_name) {
 	
-		m_singleton.DestroyObject(t_name);
+		g_singleton.DestroyObject(t_name);
+	}
+
+	/// <summary>
+	/// creates a host object over the network
+	/// </summary>
+	/// <param name="t_type">the name of the type of host object to create</param>
+	/// <param name="t_data">the object to share over network</param>
+	/// <returns>returns the network name of the object</returns>
+	public static string CreateHostObject(string t_type, object t_data) {
+
+		return g_singleton.CreateHostObject(t_type, t_data);
+	}
+
+	/// <summary>
+	/// destroys a host object over the network
+	/// </summary>
+	/// <param name="t_name">the name of the host object</param>
+	public static void DestroyHostObject(string t_name) {
+
+		g_singleton.DestroyHostObject(t_name);
+	}
+
+	/// <summary>
+	/// updates a host object over the network
+	/// </summary>
+	/// <param name="t_type">the name of the type of host object to create</param>
+	/// <param name="t_data">the object to share over network</param>
+	public static void UpdateHostObject(string t_name, object t_data) {
+
+		g_singleton.UpdateHostObject(t_name, t_data);
 	}
 
 	/// <summary>
@@ -216,7 +273,7 @@ public static class NetUtilManager {
 	/// <param name="t_name">the name of the object</param>
 	public static void RequestObject(string t_name) {
 
-		m_singleton.RequestObject(t_name);
+		g_singleton.RequestObject(t_name);
 	}
 
 	/// <summary>
@@ -226,7 +283,7 @@ public static class NetUtilManager {
 	/// <param name="t_transform">the transform to sync with</param>
 	public static void SyncTransform(string t_name, Transform t_transform) {
 	
-		m_singleton.SyncTransform(new NetUtilSyncTransform(t_name, Time.time, t_transform));
+		g_singleton.SyncTransform(new NetUtilSyncTransform(t_name, Time.time, t_transform));
 	}
 
 	/// <summary>
@@ -237,7 +294,7 @@ public static class NetUtilManager {
 		
 		foreach (NetUtilPrefab prefab in t_prefabs) {
 
-			m_singleton.RegisterPrefab(prefab.name, prefab.gameObject);
+			g_singleton.RegisterPrefab(prefab.name, prefab.gameObject);
 		}
 	}
 
@@ -248,7 +305,7 @@ public static class NetUtilManager {
 	/// <param name="t_handler">the callback function acting as the message handler</param>
 	public static void RegisterMessageHandler(string t_type, NetUtilMessageCallback t_handler) {
 
-		m_singleton.RegisterMessageHandler(t_type, t_handler);
+		g_singleton.RegisterMessageHandler(t_type, t_handler);
 	} 
 
 	/// <summary>
@@ -256,19 +313,25 @@ public static class NetUtilManager {
 	/// </summary>
 	public static void Update() {
 	
-		if (m_advertQuery != null) {
+		if (g_advertQuery != null) {
 		
-			if (Time.time - m_advertTimer >= 1.0f && m_advertQuery.isDone) {
+			if (Time.time - g_advertTimer >= 1.0f && g_advertQuery.isDone) {
 				
-				if (m_advertQuery.text != "Success") {
+				if (g_advertQuery.text != "Success") {
 
-					DebugConsole.Log(m_advertQuery.text);
+					Debug.Log(g_advertQuery.text);
 				}
-				StartAdvertiseOnline(m_gameName);
+				StartAdvertiseOnline(g_gameName);
 			}
 		}
 
-		m_singleton.HandleMessages();
+		if ( NetUtilComponent.isInitialized && NetUtilComponent.isAwake && NetUtilManager.isSceneReady && !NetUtilManager.isReady ) {
+
+			NetUtilManager.SetReady();
+		}
+
+		g_singleton.HandleConnections();
+		g_singleton.HandleMessages();
 	}
 
 	/// <summary>
@@ -277,7 +340,7 @@ public static class NetUtilManager {
 	/// <param name="t_message">the message to send</param>
 	public static void SendMessage(NetUtilCustomMessage t_message) {
 
-		m_singleton.SendMessage(t_message);
+		g_singleton.SendMessage(t_message);
 	}
 
 	/// <summary>
@@ -286,7 +349,7 @@ public static class NetUtilManager {
 	/// <param name="t_message">the message to send</param>
 	public static void SendSync(NetUtilCustomMessage t_message) {
 
-		m_singleton.SendSync(t_message);
+		g_singleton.SendSync(t_message);
 	}
 
 	/// <summary>
@@ -295,7 +358,15 @@ public static class NetUtilManager {
 	/// <param name="t_message">the message to send</param>
 	public static void SendPrioritySync(NetUtilCustomMessage t_message) {
 
-		m_singleton.SendPrioritySync(t_message);
+		g_singleton.SendPrioritySync(t_message);
+	}
+
+	/// <summary>
+	/// sets the client ready and creates all queued network objects
+	/// </summary>
+	public static void SetReady() {
+
+		g_singleton.SetReady();
 	}
 
 	/// <summary>
@@ -304,7 +375,16 @@ public static class NetUtilManager {
 	/// <param name="t_name">the name of the object</param>
 	public static bool OwnsObject(string t_name) {
 
-		return m_singleton.OwnsObject(t_name);
+		return g_singleton.OwnsObject(t_name);
+	}
+
+	/// <summary>
+	/// returns true if a network host object is owned locally
+	/// </summary>
+	/// <param name="t_name">the name of the host object</param>
+	public static bool OwnsHostObject(string t_name) {
+
+		return g_singleton.OwnsHostObject(t_name);
 	}
 
 	/// <summary>
@@ -313,7 +393,7 @@ public static class NetUtilManager {
 	/// <param name="t_name">the name of the object</param>
 	public static bool Contains(string t_name) {
 
-		return m_singleton.Contains(t_name);
+		return g_singleton.Contains(t_name);
 	}
 
 	/// <summary>
@@ -322,7 +402,25 @@ public static class NetUtilManager {
 	/// <param name="t_name">the name of the object</param>
 	public static GameObject GetObject(string t_name) {
 
-		return m_singleton.GetObject(t_name);
+		return g_singleton.GetObject(t_name);
+	}
+
+	/// <summary>
+	/// returns a local instance of a network host object
+	/// </summary>
+	/// <param name="t_name">the network name of the host object</param>
+	public static T GetHostObject<T>(string t_name) {
+
+		return (T)g_singleton.GetHostObject(t_name);
+	}
+
+	/// <summary>
+	/// returns a list of network names relating to host objects of the given type
+	/// </summary>
+	/// <param name="t_type">the name of the type of host object to get</param>
+	public static List<string> GetHostObjectNames(string t_type) {
+
+		return singleton.GetHostObjectNames(t_type);
 	}
 
 	/// <summary>
@@ -330,6 +428,15 @@ public static class NetUtilManager {
 	/// </summary>
 	public static NetUtilGameInfo[] GetGameList() {
 
-		return m_singleton.GetGameList();
+		return g_singleton.GetGameList();
 	}
+
+	/// <summary>
+	/// returns a collection of connections to the host, with name, identifier and ping
+	/// </summary>
+	public static NetUtilConnection[] GetConnections() {
+
+		return g_singleton.GetConnections();
+	}
+
 }
